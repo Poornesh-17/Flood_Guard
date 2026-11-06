@@ -285,6 +285,15 @@ class _EscapeScreenState extends State<EscapeScreen> {
         'karnataka_complete_v3.mbtiles',
       );
 
+      if (mbtilesPath == null) {
+        if (!mounted) return;
+        setState(() {
+          _offlineMapReady = false;
+          _mapInitializing = false;
+        });
+        return;
+      }
+
       debugPrint(
         'ESCAPE MBTILES PATH: $mbtilesPath',
       );
@@ -417,53 +426,58 @@ class _EscapeScreenState extends State<EscapeScreen> {
       'ESCAPE MAP INTERNET: $connected',
     );
   }
-  Future<String> _copyMbtilesAsset(
+  Future<String?> _copyMbtilesAsset(
       String assetPath,
       String fileName,
       ) async {
-    final supportDirectory =
-    await getApplicationSupportDirectory();
+    try {
+      final supportDirectory =
+      await getApplicationSupportDirectory();
 
-    final mapsDirectory =
-    Directory(
-      '${supportDirectory.path}/offline_maps',
-    );
-
-    if (!await mapsDirectory.exists()) {
-      await mapsDirectory.create(
-        recursive: true,
+      final mapsDirectory =
+      Directory(
+        '${supportDirectory.path}/offline_maps',
       );
+
+      if (!await mapsDirectory.exists()) {
+        await mapsDirectory.create(
+          recursive: true,
+        );
+      }
+
+      final destination =
+      File('${mapsDirectory.path}/$fileName');
+
+      if (!await destination.exists()) {
+        debugPrint(
+          'COPYING ESCAPE OFFLINE MAP...',
+        );
+
+        final byteData =
+        await rootBundle.load(assetPath);
+
+        final bytes =
+        byteData.buffer.asUint8List(
+          byteData.offsetInBytes,
+          byteData.lengthInBytes,
+        );
+
+        await destination.writeAsBytes(
+          bytes,
+          flush: true,
+        );
+
+        debugPrint(
+          'ESCAPE OFFLINE MAP COPIED: '
+              '${destination.path}',
+        );
+      }
+
+      return destination.path;
+    } catch (e) {
+      debugPrint('ESCAPE MBTILES ASSET NOT FOUND ($assetPath): $e');
+      return null;
     }
-
-    final destination =
-    File('${mapsDirectory.path}/$fileName');
-
-    if (!await destination.exists()) {
-      debugPrint(
-        'COPYING ESCAPE OFFLINE MAP...',
-      );
-
-      final byteData =
-      await rootBundle.load(assetPath);
-
-      final bytes =
-      byteData.buffer.asUint8List(
-        byteData.offsetInBytes,
-        byteData.lengthInBytes,
-      );
-
-      await destination.writeAsBytes(
-        bytes,
-        flush: true,
-      );
-
-      debugPrint(
-        'ESCAPE OFFLINE MAP COPIED: '
-            '${destination.path}',
-      );
-    }
-
-    return destination.path;
   }
   Future<bool> hasInternetConnection() async {
     final connected = await _checkInternetConnection();
@@ -1911,8 +1925,10 @@ out center;
             child: SizedBox(
               height: 420,
 
-              child: FlutterMap(
-                mapController: _mapController,
+              child: Stack(
+                children: [
+                  FlutterMap(
+                    mapController: _mapController,
                 options:
                 MapOptions(
                   initialCenter:
@@ -1930,21 +1946,10 @@ out center;
 
                 children: [
                   // ==================================================
-                  // OPENSTREETMAP
+                  // BASE MAP: OFFLINE MBTILES IF READY, ELSE TILE LAYER
                   // ==================================================
 
-                  if (_mapInternetAvailable)
-                    TileLayer(
-                      urlTemplate:
-                      'https://tile.openstreetmap.org/'
-                          '{z}/{x}/{y}.png',
-                      userAgentPackageName:
-                      'com.example.floodwatch',
-                      maxZoom: 19,
-                      keepBuffer: 2,
-                      panBuffer: 1,
-                    )
-                  else if (_offlineMapReady &&
+                  if (_offlineMapReady &&
                       _offlineStyle != null &&
                       _offlineMapProvider != null)
                     vt.VectorTileLayer(
@@ -1963,16 +1968,15 @@ out center;
                       const vt.Logger.console(),
                     )
                   else
-                    Container(
-                      color:
-                      const Color(0xFFE8E4D8),
-                      child:
-                      const Center(
-                        child:
-                        CircularProgressIndicator(
-                          color: Colors.red,
-                        ),
-                      ),
+                    TileLayer(
+                      urlTemplate:
+                      'https://tile.openstreetmap.org/'
+                          '{z}/{x}/{y}.png',
+                      userAgentPackageName:
+                      'com.example.flood_guard',
+                      maxZoom: 19,
+                      keepBuffer: 2,
+                      panBuffer: 1,
                     ),
 
                   // ==================================================
@@ -2202,8 +2206,46 @@ out center;
                   ),
                 ],
               ),
-            ),
+              if (!_mapInternetAvailable)
+                Positioned(
+                  top: 12,
+                  left: 12,
+                  right: 12,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.85),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(
+                          Icons.cloud_off,
+                          color: Colors.orange,
+                          size: 20,
+                        ),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Offline mode • Using cached/offline map',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
           ),
+        ),
+      ),
 
           // ======================================================
           // LEGEND

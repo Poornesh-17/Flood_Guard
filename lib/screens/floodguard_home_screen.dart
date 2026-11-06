@@ -312,49 +312,54 @@ class _FloodGuardHomeScreenState
 // COPY MBTILES FROM FLUTTER ASSETS TO DEVICE STORAGE
 // ============================================================
 
-  Future<String> _copyMbtilesAsset(
+  Future<String?> _copyMbtilesAsset(
       String assetPath,
       String fileName,
       ) async {
-    final supportDirectory =
-    await getApplicationSupportDirectory();
+    try {
+      final supportDirectory =
+      await getApplicationSupportDirectory();
 
-    final mapsDirectory =
-    Directory('${supportDirectory.path}/offline_maps');
+      final mapsDirectory =
+      Directory('${supportDirectory.path}/offline_maps');
 
-    if (!await mapsDirectory.exists()) {
-      await mapsDirectory.create(
-        recursive: true,
-      );
+      if (!await mapsDirectory.exists()) {
+        await mapsDirectory.create(
+          recursive: true,
+        );
+      }
+
+      final destination =
+      File('${mapsDirectory.path}/$fileName');
+
+      if (!await destination.exists()) {
+        debugPrint(
+          'COPYING OFFLINE MAP: $assetPath',
+        );
+
+        final byteData =
+        await rootBundle.load(assetPath);
+
+        final bytes = byteData.buffer.asUint8List(
+          byteData.offsetInBytes,
+          byteData.lengthInBytes,
+        );
+
+        await destination.writeAsBytes(
+          bytes,
+          flush: true,
+        );
+
+        debugPrint(
+          'OFFLINE MAP COPIED: ${destination.path}',
+        );
+      }
+
+      return destination.path;
+    } catch (e) {
+      debugPrint('OFFLINE MBTILES ASSET NOT FOUND ($assetPath): $e');
+      return null;
     }
-
-    final destination =
-    File('${mapsDirectory.path}/$fileName');
-
-    if (!await destination.exists()) {
-      debugPrint(
-        'COPYING OFFLINE MAP: $assetPath',
-      );
-
-      final byteData =
-      await rootBundle.load(assetPath);
-
-      final bytes = byteData.buffer.asUint8List(
-        byteData.offsetInBytes,
-        byteData.lengthInBytes,
-      );
-
-      await destination.writeAsBytes(
-        bytes,
-        flush: true,
-      );
-
-      debugPrint(
-        'OFFLINE MAP COPIED: ${destination.path}',
-      );
-    }
-
-    return destination.path;
   }
 
 // ============================================================
@@ -378,6 +383,15 @@ class _FloodGuardHomeScreenState
         'assets/offline_maps/karnataka_south.mbtiles',
         'karnataka_complete_v2.mbtiles',
       );
+
+      if (mbtilesPath == null) {
+        if (!mounted) return;
+        setState(() {
+          _offlineMapReady = false;
+          _mapInitializing = false;
+        });
+        return;
+      }
 
       debugPrint(
         'OFFLINE MBTILES PATH: $mbtilesPath',
@@ -3045,37 +3059,28 @@ out center;
 // BASE MAP
 // ============================================================
 
-// ONLINE OPENSTREETMAP
-                if (_mapInternetAvailable)
-                  TileLayer(
-                    urlTemplate:
-                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName:
-                    'com.floodwatch.floodguard',
-                    maxZoom: 19,
-                    keepBuffer: 2,
-                    panBuffer: 1,
-                  )
-
-// OFFLINE SHORTBREAD OSM
-                else if (_offlineMapReady &&
+                // BASE MAP: OFFLINE MBTILES VECTOR TILES IF AVAILABLE, ELSE RASTER TILES
+                if (_offlineMapReady &&
                     _offlineStyle != null &&
                     _offlineMapProvider != null)
                   vt.VectorTileLayer(
                     theme: _offlineStyle!.theme,
-
                     tileProviders: _offlineStyle!.providers,
-
-                    rasterSources:
-                    _offlineStyle!.rasterSources,
-
+                    rasterSources: _offlineStyle!.rasterSources,
                     sprites: _offlineStyle!.sprites,
-
                     tileOffset: vt.TileOffset.maplibre,
-
                     showLabels: true,
-
                     logger: const vt.Logger.console(),
+                  )
+                else
+                  TileLayer(
+                    urlTemplate:
+                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    userAgentPackageName:
+                    'com.example.flood_guard',
+                    maxZoom: 19,
+                    keepBuffer: 2,
+                    panBuffer: 1,
                   ),
 
                 // FLOOD RISK AREAS
@@ -4832,26 +4837,8 @@ class FullScreenMapScreen extends StatelessWidget {
           maxZoom: 19,
         ),
         children: [
-          // ======================================================
-          // ONLINE MAP
-          // ======================================================
-
-          if (mapInternetAvailable)
-            TileLayer(
-              urlTemplate:
-              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName:
-              'com.floodwatch.floodguard',
-              maxZoom: 19,
-              keepBuffer: 2,
-              panBuffer: 1,
-            )
-
-          // ======================================================
-          // OFFLINE MAP
-          // ======================================================
-
-          else if (offlineMapReady &&
+          // BASE MAP: OFFLINE MBTILES VECTOR TILES IF AVAILABLE, ELSE RASTER TILES
+          if (offlineMapReady &&
               offlineStyle != null &&
               offlineMapProvider != null)
             vt.VectorTileLayer(
@@ -4863,34 +4850,15 @@ class FullScreenMapScreen extends StatelessWidget {
               showLabels: true,
               logger: const vt.Logger.console(),
             )
-
-          // ======================================================
-          // NO MAP
-          // ======================================================
-
           else
-            const ColoredBox(
-              color: Color(0xFF0B0708),
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.map_outlined,
-                      color: Colors.white54,
-                      size: 50,
-                    ),
-                    SizedBox(height: 12),
-                    Text(
-                      'Offline map is not available',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            TileLayer(
+              urlTemplate:
+              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName:
+              'com.example.flood_guard',
+              maxZoom: 19,
+              keepBuffer: 2,
+              panBuffer: 1,
             ),
 
           // ======================================================
