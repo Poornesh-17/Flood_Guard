@@ -1759,15 +1759,7 @@ out geom;
       );
       if (!mounted) return;
 
-      final prob = prediction.probability > 0
-          ? prediction.probability
-          : _calculateLocalFloodProbability(
-              rainfall1day: recent.rainfall1day,
-              rainfall3day: recent.rainfall3day,
-              rainfall7day: recent.rainfall7day,
-              elevation: elevation,
-              riverDistance: nearestRiverDistance > 0 ? nearestRiverDistance : 5.0,
-            );
+      final prob = (prediction.probability >= 5.0 ? prediction.probability : prediction.riskIndex.toDouble()).clamp(5.0, 99.0);
 
       setState(() {
         aiRisk = prediction.risk;
@@ -2784,68 +2776,82 @@ out center;
 
   Widget buildNearestSafeGround() {
     return Container(
-      padding:
-      const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: card,
-        borderRadius:
-        BorderRadius.circular(22),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecorgit add README.mdation(
+        color: const Color(0xFF0D0809), // Dark sleek background
+        borderRadius: BorderRadius.circular(22),
         border: Border.all(
-          color:
-          const Color(0xFF34292B),
+          color: const Color(0xFF221718), // Darker subtle border
         ),
       ),
       child: Column(
-        crossAxisAlignment:
-        CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            AppLanguage.tr('nearest_safe_ground'),
-            style:
-            const TextStyle(
-              color: muted,
-              fontWeight:
-              FontWeight.bold,
-              letterSpacing: 2,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                AppLanguage.tr('nearest_safe_ground'),
+                style: const TextStyle(
+                  color: muted,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.5,
+                  fontSize: 12,
+                ),
+              ),
+              if (safePlacesLoading)
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(color: red, strokeWidth: 2),
+                ),
+            ],
           ),
 
-          const SizedBox(
-            height: 14,
-          ),
+          const SizedBox(height: 14),
 
           buildMap(),
 
-          const SizedBox(
-            height: 18,
-          ),
+          if (safePlaces.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Text(
+              'NEARBY SAFE PLACES & SHELTERS',
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.0,
+              ),
+            ),
+            const SizedBox(height: 10),
+            ...safePlaces.take(4).map((place) => buildSafePlaceItem(place)),
+          ],
 
+          const SizedBox(height: 16),
 
           SizedBox(
             width: double.infinity,
             height: 50,
             child: ElevatedButton.icon(
-              onPressed:
-                  () {
+              onPressed: () {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) =>
-                    const EscapeScreen(),
+                    builder: (_) => const EscapeScreen(),
                   ),
                 );
               },
-              icon: const Icon(
-                Icons.navigation,
-              ),
+              icon: const Icon(Icons.navigation, size: 20),
               label: const Text(
                 'Navigate to safe zone',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
               ),
-              style:
-              ElevatedButton.styleFrom(
+              style: ElevatedButton.styleFrom(
                 backgroundColor: red,
-                foregroundColor:
-                Colors.white,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
               ),
             ),
           ),
@@ -2855,74 +2861,85 @@ out center;
   }
 
   Widget buildSafePlaceItem(
-      SafePlaceItem place,
-      ) {
+    SafePlaceItem place,
+  ) {
     return Container(
-      margin:
-      const EdgeInsets.only(
-        bottom: 8,
-      ),
-      padding:
-      const EdgeInsets.all(14),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color:
-        const Color(0xFF120C0D),
-        borderRadius:
-        BorderRadius.circular(16),
+        color: const Color(0xFF070405), // Darker safe place item card
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color:
-          const Color(0xFF392B2D),
+          color: const Color(0xFF1B1112), // Darker border
         ),
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.location_on_outlined,
-            color: red,
+          Container(
+            padding: const EdgeInsets.all(7),
+            decoration: BoxDecoration(
+              color: red.withValues(alpha: 0.15),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.shield_outlined,
+              color: red,
+              size: 18,
+            ),
           ),
-
-          const SizedBox(
-            width: 10,
-          ),
-
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
-              crossAxisAlignment:
-              CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  formatDistance(
-                    place.distance,
-                  ),
-                  style:
-                  const TextStyle(
-                    color: Colors.white,
-                    fontWeight:
-                    FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(
-                  height: 3,
-                ),
                 Text(
                   place.name,
                   maxLines: 1,
-                  overflow:
-                  TextOverflow.ellipsis,
-                  style:
-                  const TextStyle(
-                    color: muted,
-                    fontSize: 12,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
                   ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    const Icon(Icons.directions_walk, color: muted, size: 12),
+                    const SizedBox(width: 4),
+                    Text(
+                      formatDistance(place.distance),
+                      style: const TextStyle(
+                        color: green,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                      ),
+                    ),
+                    if (place.type.isNotEmpty) ...[
+                      Text(
+                        ' • ${place.type.toUpperCase()}',
+                        style: const TextStyle(
+                          color: muted,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),
           ),
-
-          const Icon(
-            Icons.terrain,
-            color: green,
-            size: 18,
+          Container(
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: green.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(
+              Icons.verified_user_outlined,
+              color: green,
+              size: 16,
+            ),
           ),
         ],
       ),

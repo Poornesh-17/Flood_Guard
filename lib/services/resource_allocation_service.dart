@@ -1,8 +1,20 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:io';
+
+double _parseDouble(dynamic val, [double defaultValue = 0.0]) {
+  if (val == null) return defaultValue;
+  if (val is num) return val.toDouble();
+  if (val is String) return double.tryParse(val) ?? defaultValue;
+  return defaultValue;
+}
+
+int _parseInt(dynamic val, [int defaultValue = 0]) {
+  if (val == null) return defaultValue;
+  if (val is num) return val.toInt();
+  if (val is String) return int.tryParse(val) ?? defaultValue;
+  return defaultValue;
+}
 
 class AffectedLocation {
   final String id;
@@ -55,17 +67,17 @@ class AffectedLocation {
     return AffectedLocation(
       id: json['id']?.toString() ?? 'loc_${DateTime.now().millisecondsSinceEpoch}',
       name: json['name']?.toString() ?? 'Unknown Location',
-      latitude: (json['latitude'] as num?)?.toDouble() ?? 15.3173,
-      longitude: (json['longitude'] as num?)?.toDouble() ?? 75.7139,
+      latitude: _parseDouble(json['latitude'], 15.3173),
+      longitude: _parseDouble(json['longitude'], 75.7139),
       riskLevel: json['risk_level']?.toString().toUpperCase() ?? 'MODERATE',
-      affectedPopulation: (json['affected_population'] as num?)?.toInt() ?? 1000,
-      inundationDepthM: (json['inundation_depth_m'] as num?)?.toDouble() ?? 1.0,
+      affectedPopulation: _parseInt(json['affected_population'], 1000),
+      inundationDepthM: _parseDouble(json['inundation_depth_m'], 1.0),
       status: json['status']?.toString() ?? 'Active Flood Watch',
-      allocatedBoats: (json['allocated_boats'] as num?)?.toInt() ?? 0,
-      allocatedFoodPacks: (json['allocated_food_packs'] as num?)?.toInt() ?? 0,
-      allocatedMedicalKits: (json['allocated_medical_kits'] as num?)?.toInt() ?? 0,
-      allocatedTents: (json['allocated_tents'] as num?)?.toInt() ?? 0,
-      allocatedTeams: (json['allocated_teams'] as num?)?.toInt() ?? 0,
+      allocatedBoats: _parseInt(json['allocated_boats'], 0),
+      allocatedFoodPacks: _parseInt(json['allocated_food_packs'], 0),
+      allocatedMedicalKits: _parseInt(json['allocated_medical_kits'], 0),
+      allocatedTents: _parseInt(json['allocated_tents'], 0),
+      allocatedTeams: _parseInt(json['allocated_teams'], 0),
     );
   }
 }
@@ -95,11 +107,11 @@ class AvailableResources {
 
   factory AvailableResources.fromJson(Map<String, dynamic> json) {
     return AvailableResources(
-      boats: (json['boats'] as num?)?.toInt() ?? 45,
-      foodPacks: (json['food_packs'] as num?)?.toInt() ?? 40000,
-      medicalKits: (json['medical_kits'] as num?)?.toInt() ?? 500,
-      tents: (json['tents'] as num?)?.toInt() ?? 2500,
-      rescueTeams: (json['rescue_teams'] as num?)?.toInt() ?? 35,
+      boats: _parseInt(json['boats'], 45),
+      foodPacks: _parseInt(json['food_packs'], 40000),
+      medicalKits: _parseInt(json['medical_kits'], 500),
+      tents: _parseInt(json['tents'], 2500),
+      rescueTeams: _parseInt(json['rescue_teams'], 35),
     );
   }
 }
@@ -329,6 +341,16 @@ class ResourceAllocationService {
 
   // Calculate local requirements
   ResourceRequirement calculateRequirement(AffectedLocation loc) {
+    if (loc.riskLevel == 'NONE' || loc.affectedPopulation <= 0) {
+      return const ResourceRequirement(
+        boats: 0,
+        foodPacks: 0,
+        medicalKits: 0,
+        tents: 0,
+        rescueTeams: 0,
+      );
+    }
+
     final riskMult = loc.riskLevel == 'HIGH' ? 1.3 : (loc.riskLevel == 'MODERATE' ? 1.1 : 1.0);
     final pop = loc.affectedPopulation;
 
@@ -345,6 +367,82 @@ class ResourceAllocationService {
       tents: reqTents < 20 ? 20 : reqTents,
       rescueTeams: reqTeams < 1 ? 1 : reqTeams,
     );
+  }
+
+  // Synchronize resource allocation locations with real uploaded AI Image Damage Assessments
+  List<AffectedLocation> syncWithImageAssessments(
+    List<Map<String, dynamic>> assessments,
+    List<AffectedLocation> existingLocations,
+  ) {
+    if (assessments.isEmpty) return existingLocations;
+
+    final List<AffectedLocation> updatedList = [];
+    int imageIndex = 1;
+
+    for (final item in assessments) {
+      final rawLat = item['latitude'];
+      final rawLon = item['longitude'];
+      if (rawLat == null || rawLon == null) continue;
+
+      final lat = _parseDouble(rawLat, -999.0);
+      final lon = _parseDouble(rawLon, -999.0);
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) continue;
+
+      final severity = (item['severity'] ?? '').toString().toUpperCase();
+      final damageLevel = (item['damageLevel'] ?? '').toString().toUpperCase();
+      final score = _parseDouble(item['damageScore'], 0.0);
+
+      String riskLevel = 'LOW';
+      int estimatedPop = 1200;
+      double depth = 0.5;
+      String statusText = 'Photo AI: Minor Impact';
+
+      if (severity == 'HIGH' || damageLevel.contains('SEVERE') || score >= 65.0) {
+        riskLevel = 'HIGH';
+        estimatedPop = (10000 + (score * 120)).round();
+        depth = 2.2;
+        statusText = 'Photo AI: Severe Building Structural Inundation (${score.toStringAsFixed(0)}%)';
+      } else if (severity == 'MODERATE' || damageLevel.contains('PARTIAL') || score >= 38.0) {
+        riskLevel = 'MODERATE';
+        estimatedPop = (4000 + (score * 80)).round();
+        depth = 1.2;
+        statusText = 'Photo AI: Moderate Building Flood Inundation (${score.toStringAsFixed(0)}%)';
+      } else if (severity == 'NONE' || damageLevel.contains('NO_DAMAGE')) {
+        riskLevel = 'NONE';
+        estimatedPop = 0;
+        depth = 0.0;
+        statusText = 'Photo AI: Intact Building Structure (No Damage)';
+      } else {
+        riskLevel = 'LOW';
+        estimatedPop = 1500;
+        depth = 0.4;
+        statusText = 'Photo AI: Low Flood Staining (${score.toStringAsFixed(0)}%)';
+      }
+
+      final id = item['assessment_id']?.toString() ?? 'img_loc_$imageIndex';
+      final name = 'Image Location #$imageIndex (${lat.toStringAsFixed(3)}, ${lon.toStringAsFixed(3)})';
+
+      updatedList.add(AffectedLocation(
+        id: id,
+        name: name,
+        latitude: lat,
+        longitude: lon,
+        riskLevel: riskLevel,
+        affectedPopulation: estimatedPop,
+        inundationDepthM: depth,
+        status: statusText,
+        allocatedBoats: (estimatedPop * 0.005).round(),
+        allocatedFoodPacks: (estimatedPop * 1.5).round(),
+        allocatedMedicalKits: (estimatedPop * 0.015).round(),
+        allocatedTents: (estimatedPop * 0.08).round(),
+        allocatedTeams: (estimatedPop * 0.002).round(),
+      ));
+
+      imageIndex++;
+    }
+
+    // Return updatedList if photos found, otherwise preserve existingLocations
+    return updatedList.isNotEmpty ? updatedList : existingLocations;
   }
 
   // Generate full AI Allocation Summary
@@ -378,24 +476,31 @@ class ResourceAllocationService {
       totalShortTeams += shortTeams;
 
       // Calculate AI Priority Score (0 - 100)
-      final riskScore = loc.riskLevel == 'HIGH' ? 40.0 : (loc.riskLevel == 'MODERATE' ? 25.0 : 10.0);
-      final popScore = ((loc.affectedPopulation / 20000.0) * 35.0).clamp(0.0, 35.0);
-      
-      final boatRatio = (shortBoats / req.boats).clamp(0.0, 1.0);
-      final foodRatio = (shortFood / req.foodPacks).clamp(0.0, 1.0);
-      final medRatio = (shortMed / req.medicalKits).clamp(0.0, 1.0);
-      final shortageRatio = (boatRatio + foodRatio + medRatio) / 3.0;
-      final shortageScore = (shortageRatio * 25.0).clamp(0.0, 25.0);
-
-      final priorityScore = (riskScore + popScore + shortageScore).roundToDouble();
-
+      double priorityScore = 0.0;
       String aiRec;
-      if (priorityScore >= 75.0) {
-        aiRec = 'URGENT AI RECOMMENDATION: Priority 1 target for emergency dispatch. Heavy shortage of rescue boats (${shortBoats} missing) & food packs for ${loc.affectedPopulation} affected people.';
-      } else if (priorityScore >= 50.0) {
-        aiRec = 'HIGH AI RECOMMENDATION: Secondary priority. Deploy additional food packs (${shortFood} deficit) and medical supplies.';
+
+      if (loc.riskLevel == 'NONE') {
+        priorityScore = 0.0;
+        aiRec = 'INTACT STRUCTURE: Building at photo location (${loc.latitude.toStringAsFixed(3)}, ${loc.longitude.toStringAsFixed(3)}) has no flood damage. No emergency resources required.';
       } else {
-        aiRec = 'STANDARD AI RECOMMENDATION: Maintain current supply line. Monitor flood water levels.';
+        final riskScore = loc.riskLevel == 'HIGH' ? 40.0 : (loc.riskLevel == 'MODERATE' ? 25.0 : 10.0);
+        final popScore = ((loc.affectedPopulation / 20000.0) * 35.0).clamp(0.0, 35.0);
+        
+        final boatRatio = req.boats > 0 ? (shortBoats / req.boats).clamp(0.0, 1.0) : 0.0;
+        final foodRatio = req.foodPacks > 0 ? (shortFood / req.foodPacks).clamp(0.0, 1.0) : 0.0;
+        final medRatio = req.medicalKits > 0 ? (shortMed / req.medicalKits).clamp(0.0, 1.0) : 0.0;
+        final shortageRatio = (boatRatio + foodRatio + medRatio) / 3.0;
+        final shortageScore = (shortageRatio * 25.0).clamp(0.0, 25.0);
+
+        priorityScore = (riskScore + popScore + shortageScore).roundToDouble();
+
+        if (priorityScore >= 75.0) {
+          aiRec = 'URGENT PHOTO AI DISPATCH: Priority 1 target at (${loc.latitude.toStringAsFixed(3)}, ${loc.longitude.toStringAsFixed(3)}). High flood inundation photo result with shortage of $shortBoats boats & $shortFood food packs.';
+        } else if (priorityScore >= 50.0) {
+          aiRec = 'HIGH PHOTO AI DISPATCH: Secondary priority. Deploy additional food packs ($shortFood deficit) and medical supplies.';
+        } else {
+          aiRec = 'STANDARD PHOTO AI WATCH: Minor flood impact at image location. Maintain local monitoring.';
+        }
       }
 
       list.add(LocationAllocationResult(
@@ -430,10 +535,10 @@ class ResourceAllocationService {
       ));
     }
 
-    final topLoc = rankedList.isNotEmpty ? rankedList.first.location.name : 'None';
+    final topLoc = rankedList.isNotEmpty ? rankedList.first.location.name : 'No Photo Assessment Taken';
     final insights = rankedList.isNotEmpty
-        ? 'AI Decision Engine evaluated ${rankedList.length} flood-affected locations. "$topLoc" is ranked #1 Priority for immediate resource allocation.'
-        : 'No affected locations identified.';
+        ? 'AI Decision Engine evaluated ${rankedList.length} image photo location(s). "$topLoc" is calculated for priority resource allocation.'
+        : 'No image damage assessment taken yet. Capture a photo to calculate required resources at that location.';
 
     return AllocationSummary(
       totalLocations: rankedList.length,

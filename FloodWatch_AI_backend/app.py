@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Form, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import tensorflow as tf
 import joblib
@@ -9,11 +10,9 @@ import requests
 import time
 import hashlib
 import os
-
-from fastapi import Header
+from pathlib import Path
 
 from alert_monitor import run_alert_check
-from pathlib import Path
 
 
 # ============================================================
@@ -207,7 +206,9 @@ def predict_flood(request: FloodPredictionRequest):
             risk_level = "HIGH"
             risk_color = "red"
 
-        risk_index = round(probability * 100)
+        risk_index = max(5, round(probability * 100))
+        if probability < 0.05:
+            probability = 0.05
 
         # ------------------------------------------------
         # RESPONSE
@@ -793,11 +794,31 @@ def run_scheduled_alert_check(
 try:
     import damage_assessment_api as damage_api
 
+    damage_api.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/uploads", StaticFiles(directory=str(damage_api.UPLOAD_DIR)), name="uploads")
     app.post("/assessments")(damage_api.create_assessment)
     app.get("/assessments")(damage_api.get_assessments)
     app.get("/assessments/{assessment_id}")(damage_api.get_assessment)
     app.delete("/assessments/{assessment_id}")(damage_api.delete_assessment)
-    print("Damage Assessment API routes integrated into main backend.")
+    print("Damage Assessment API routes integrated into main backend successfully.")
 except Exception as e:
-    print(f"Damage Assessment API integration notice: {e}")
+    print(f"Damage Assessment API integration error: {e}")
+
+try:
+    import resource_allocation_api as resource_api
+
+    @app.get("/resource-allocation/summary")
+    def get_resource_allocation_summary():
+        data = resource_api.load_data()
+        return resource_api.analyze_and_rank_allocations(data)
+
+    @app.post("/resource-allocation/update-resources")
+    def update_available_resources(resources: dict = Body(...)):
+        data = resource_api.load_data()
+        data["available_resources"].update(resources)
+        resource_api.save_data(data)
+        return resource_api.analyze_and_rank_allocations(data)
+
+    print("Resource Allocation API routes integrated into main backend successfully.")
+except Exception as e:
+    print(f"Resource Allocation API integration error: {e}")

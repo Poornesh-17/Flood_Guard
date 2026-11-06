@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -27,45 +28,69 @@ extends State<DamageAssessmentMapScreen> {
 
 static String? _cachedBaseUrl;
 
-static Future<String> getActiveBaseUrl() async {
-  if (_cachedBaseUrl != null) return _cachedBaseUrl!;
+static Future<String> getActiveBaseUrl({bool forceRefresh = false}) async {
+  if (!forceRefresh && _cachedBaseUrl != null) return _cachedBaseUrl!;
 
   final List<String> candidates;
   if (kIsWeb) {
-    candidates = ['http://127.0.0.1:8000'];
+    candidates = ['http://127.0.0.1:8000', 'http://localhost:8000'];
   } else if (Platform.isAndroid) {
     candidates = [
-      'http://10.0.2.2:8000',
-      'http://192.168.1.3:8000',
       'http://192.168.1.5:8000',
-      'http://192.168.0.100:8000',
+      'http://10.0.2.2:8000',
       'http://127.0.0.1:8000',
+      'http://192.168.1.3:8000',
+      'http://192.168.1.2:8000',
+      'http://192.168.1.4:8000',
+      'http://192.168.1.6:8000',
+      'http://192.168.1.100:8000',
+      'http://192.168.0.100:8000',
+      'http://192.168.0.101:8000',
+      'http://localhost:8000',
     ];
   } else {
-    candidates = ['http://127.0.0.1:8000'];
+    candidates = ['http://127.0.0.1:8000', 'http://localhost:8000'];
   }
+
+  final completer = Completer<String>();
+  int pending = candidates.length;
 
   for (final url in candidates) {
-    try {
-      final res = await http
-          .get(Uri.parse('$url/'))
-          .timeout(const Duration(seconds: 2));
-      if (res.statusCode == 200) {
+    http.get(Uri.parse('$url/')).timeout(const Duration(seconds: 3)).then((res) {
+      if (res.statusCode == 200 && !completer.isCompleted) {
         _cachedBaseUrl = url;
-        return url;
+        completer.complete(url);
+      } else {
+        pending--;
+        if (pending == 0 && !completer.isCompleted) {
+          completer.complete(
+            Platform.isAndroid ? 'http://10.0.2.2:8000' : 'http://127.0.0.1:8000',
+          );
+        }
       }
-    } catch (_) {}
+    }).catchError((_) {
+      pending--;
+      if (pending == 0 && !completer.isCompleted) {
+        completer.complete(
+          Platform.isAndroid ? 'http://10.0.2.2:8000' : 'http://127.0.0.1:8000',
+        );
+      }
+    });
   }
 
-  _cachedBaseUrl = Platform.isAndroid
-      ? 'http://10.0.2.2:8000'
-      : 'http://127.0.0.1:8000';
-  return _cachedBaseUrl!;
+  return completer.future;
 }
 
 static String get baseUrl {
   return _cachedBaseUrl ??
       (Platform.isAndroid ? 'http://10.0.2.2:8000' : 'http://127.0.0.1:8000');
+}
+
+double? _parseDouble(dynamic value) {
+  if (value == null) return null;
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value);
+  return null;
 }
 
 static const Color red = Color(0xFFFF2525);
@@ -143,8 +168,9 @@ errorMessage = null;
 });
 
 } catch (e) {
+  _cachedBaseUrl = null;
 
-if (!mounted) return;
+  if (!mounted) return;
 
 setState(() {
 isLoading = false;
@@ -211,6 +237,8 @@ if ([
 'UNDAMAGED',
 'NO_DAMAGE',
 'NO VISIBLE DAMAGE',
+'NONE',
+'NO DAMAGE',
 ].any((value) =>
 level.contains(value) || severity == value)) {
 return green;
@@ -260,8 +288,10 @@ return 'Minor Damage';
 
 if (level.contains('UNDAMAGED') ||
 level.contains('NO_DAMAGE') ||
-level.contains('NO VISIBLE DAMAGE')) {
-return 'No Visible Damage';
+level.contains('NO VISIBLE DAMAGE') ||
+severity == 'NONE' ||
+severity == 'NO DAMAGE') {
+return 'No Building Damage';
 }
 
 return 'Classification Unavailable';
@@ -315,12 +345,25 @@ final latitude =
 final longitude =
 (data['longitude'] as num).toDouble();
 
-final imagePath =
-(data['imageUrl'] ?? '').toString();
+String? resolveUrl(dynamic raw) {
+  if (raw == null) return null;
+  final str = raw.toString().trim();
+  if (str.isEmpty) return null;
+  if (str.startsWith('http://') || str.startsWith('https://')) return str;
+  if (str.startsWith('damage_assessment_uploads/')) {
+    final filename = str.split('/').last;
+    return '$baseUrl/uploads/$filename';
+  }
+  final clean = str.startsWith('/') ? str : '/$str';
+  return '$baseUrl$clean';
+}
 
-final imageUrl = imagePath.startsWith('http')
-? imagePath
-    : '$baseUrl$imagePath';
+final afterImageUrl = resolveUrl(
+  data['imageUrl'] ?? data['image_url'] ?? data['after_image'],
+);
+final beforeImageUrl = resolveUrl(
+  data['beforeImageUrl'] ?? data['before_image'],
+);
 
 final details =
 (data['details'] ?? 'No additional details available.')
@@ -392,29 +435,100 @@ fontWeight: FontWeight.bold,
 
 const SizedBox(height: 18),
 
-if (imagePath.isNotEmpty)
-ClipRRect(
-borderRadius: BorderRadius.circular(14),
-child: Image.network(
-imageUrl,
-height: 190,
-width: double.infinity,
-fit: BoxFit.cover,
-errorBuilder: (_, __, ___) {
-return const SizedBox(
-height: 100,
-child: Center(
-child: Text(
-'Image unavailable',
-style: TextStyle(
-color: Colors.white70,
-),
-),
-),
-);
-},
-),
-),
+if (beforeImageUrl != null && afterImageUrl != null) ...[
+  Row(
+    children: [
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'BEFORE FLOOD',
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.network(
+                beforeImageUrl,
+                height: 140,
+                width: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  height: 120,
+                  color: const Color(0xFF0B0708),
+                  alignment: Alignment.center,
+                  child: const Text('Photo unavailable',
+                      style: TextStyle(color: Colors.white38, fontSize: 11)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'AFTER FLOOD',
+              style: TextStyle(
+                color: Color(0xFFFF2525),
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.network(
+                afterImageUrl,
+                height: 140,
+                width: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  height: 120,
+                  color: const Color(0xFF0B0708),
+                  alignment: Alignment.center,
+                  child: const Text('Photo unavailable',
+                      style: TextStyle(color: Colors.white38, fontSize: 11)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ],
+  ),
+] else if (afterImageUrl != null) ...[
+  ClipRRect(
+    borderRadius: BorderRadius.circular(14),
+    child: Image.network(
+      afterImageUrl,
+      height: 190,
+      width: double.infinity,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) {
+        return const SizedBox(
+          height: 100,
+          child: Center(
+            child: Text(
+              'Image unavailable',
+              style: TextStyle(
+                color: Colors.white70,
+              ),
+            ),
+          ),
+        );
+      },
+    ),
+  ),
+],
 
 const SizedBox(height: 18),
 
@@ -564,34 +678,47 @@ legendItem(grey, 'PENDING ANALYSIS'),
 Widget build(BuildContext context) {
 
 final markers = <Marker>[];
+final Map<String, int> locationCounts = {};
 
 for (final data in assessments) {
 
-final latitude =
-(data['latitude'] as num).toDouble();
+final baseLat = _parseDouble(data['latitude']);
+final baseLon = _parseDouble(data['longitude']);
 
-final longitude =
-(data['longitude'] as num).toDouble();
+if (baseLat == null ||
+    baseLon == null ||
+    baseLat < -90 ||
+    baseLat > 90 ||
+    baseLon < -180 ||
+    baseLon > 180) {
+  continue;
+}
 
-if (latitude < -90 ||
-latitude > 90 ||
-longitude < -180 ||
-longitude > 180) {
-continue;
+final key = '${baseLat.toStringAsFixed(4)},${baseLon.toStringAsFixed(4)}';
+final count = locationCounts[key] ?? 0;
+locationCounts[key] = count + 1;
+
+double lat = baseLat;
+double lon = baseLon;
+if (count > 0) {
+  final angle = count * 1.25;
+  final radius = count * 0.00035;
+  lat += radius * math.cos(angle);
+  lon += radius * math.sin(angle);
 }
 
 final color = getDamageColor(data);
 
 markers.add(
-Marker(
-point: LatLng(latitude, longitude),
-width: 42,
-height: 42,
-child: GestureDetector(
-onTap: () => showDamageDetails(data),
-child: buildMarker(color),
-),
-),
+  Marker(
+    point: LatLng(lat, lon),
+    width: 42,
+    height: 42,
+    child: GestureDetector(
+      onTap: () => showDamageDetails(data),
+      child: buildMarker(color),
+    ),
+  ),
 );
 }
 

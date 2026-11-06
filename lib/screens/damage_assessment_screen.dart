@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:latlong2/latlong.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +11,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 
 import 'damage_assessment_map_screen.dart';
+import '../services/resource_allocation_service.dart';
+import 'resource_allocation_screen.dart';
 
 class DamageAssessmentScreen extends StatefulWidget {
   final LatLng? initialCenter;
@@ -17,6 +21,9 @@ class DamageAssessmentScreen extends StatefulWidget {
     super.key,
     this.initialCenter,
   });
+
+  static Future<String> getActiveBaseUrl({bool forceRefresh = false}) =>
+      _DamageAssessmentScreenState.getActiveBaseUrl(forceRefresh: forceRefresh);
 
   @override
   State<DamageAssessmentScreen> createState() =>
@@ -34,40 +41,57 @@ class _DamageAssessmentScreenState
 
   static String? _cachedBaseUrl;
 
-  static Future<String> getActiveBaseUrl() async {
-    if (_cachedBaseUrl != null) return _cachedBaseUrl!;
+  static Future<String> getActiveBaseUrl({bool forceRefresh = false}) async {
+    if (!forceRefresh && _cachedBaseUrl != null) return _cachedBaseUrl!;
 
     final List<String> candidates;
     if (kIsWeb) {
-      candidates = ['http://127.0.0.1:8000'];
+      candidates = ['http://127.0.0.1:8000', 'http://localhost:8000'];
     } else if (Platform.isAndroid) {
       candidates = [
-        'http://10.0.2.2:8000',
-        'http://192.168.1.3:8000',
         'http://192.168.1.5:8000',
-        'http://192.168.0.100:8000',
+        'http://10.0.2.2:8000',
         'http://127.0.0.1:8000',
+        'http://192.168.1.3:8000',
+        'http://192.168.1.2:8000',
+        'http://192.168.1.4:8000',
+        'http://192.168.1.6:8000',
+        'http://192.168.1.100:8000',
+        'http://192.168.0.100:8000',
+        'http://192.168.0.101:8000',
+        'http://localhost:8000',
       ];
     } else {
-      candidates = ['http://127.0.0.1:8000'];
+      candidates = ['http://127.0.0.1:8000', 'http://localhost:8000'];
     }
+
+    final completer = Completer<String>();
+    int pending = candidates.length;
 
     for (final url in candidates) {
-      try {
-        final res = await http
-            .get(Uri.parse('$url/'))
-            .timeout(const Duration(seconds: 2));
-        if (res.statusCode == 200) {
+      http.get(Uri.parse('$url/')).timeout(const Duration(seconds: 3)).then((res) {
+        if (res.statusCode == 200 && !completer.isCompleted) {
           _cachedBaseUrl = url;
-          return url;
+          completer.complete(url);
+        } else {
+          pending--;
+          if (pending == 0 && !completer.isCompleted) {
+            completer.complete(
+              Platform.isAndroid ? 'http://10.0.2.2:8000' : 'http://127.0.0.1:8000',
+            );
+          }
         }
-      } catch (_) {}
+      }).catchError((_) {
+        pending--;
+        if (pending == 0 && !completer.isCompleted) {
+          completer.complete(
+            Platform.isAndroid ? 'http://10.0.2.2:8000' : 'http://127.0.0.1:8000',
+          );
+        }
+      });
     }
 
-    _cachedBaseUrl = Platform.isAndroid
-        ? 'http://10.0.2.2:8000'
-        : 'http://127.0.0.1:8000';
-    return _cachedBaseUrl!;
+    return completer.future;
   }
 
   static String get baseUrl {
@@ -76,6 +100,7 @@ class _DamageAssessmentScreenState
   }
 
   final ImagePicker _picker = ImagePicker();
+  final MapController _mapController = MapController();
 
   File? beforeImage;
   File? afterImage;
@@ -89,19 +114,61 @@ class _DamageAssessmentScreenState
 
   List<Map<String, dynamic>> assessments = [];
 
+  double? _parseDouble(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value);
+    return null;
+  }
+
+  Timer? _refreshTimer;
+  AllocationSummary? _allocationSummary;
+
+  Future<void> _loadAllocationData() async {
+    final data = await ResourceAllocationService.instance.loadAllocationData();
+    var locs = data['locations'] as List<AffectedLocation>;
+    final avail = data['available_resources'] as AvailableResources;
+
+    if (assessments.isNotEmpty) {
+      locs = ResourceAllocationService.instance.syncWithImageAssessments(
+        assessments,
+        locs,
+      );
+    }
+
+    final summary = ResourceAllocationService.instance.calculateSummary(
+      locations: locs,
+      availableResources: avail,
+    );
+    if (mounted) {
+      setState(() {
+        _allocationSummary = summary;
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     loadAssessments();
 
-    if (widget.initialCenter != null) {
-      // Use the location supplied by the previous screen.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          getCurrentLocation();
-        }
-      });
-    }
+    // Auto-refresh assessments every 8 seconds so dots from all users appear live
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 8),
+      (_) => loadAssessments(),
+    );
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        getCurrentLocation();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   // ============================================================
@@ -120,24 +187,29 @@ class _DamageAssessmentScreenState
           .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        final result = jsonDecode(response.body);
-
-        final List<dynamic> records = result['assessments'] ?? [];
+        final decoded = jsonDecode(response.body);
+        final List<dynamic> records = decoded is Map<String, dynamic>
+            ? (decoded['assessments'] as List<dynamic>? ?? [])
+            : (decoded is List ? decoded : []);
 
         if (!mounted) return;
 
         setState(() {
           assessments = records
               .where((item) =>
-          item['latitude'] != null &&
-              item['longitude'] != null)
-              .map((item) => Map<String, dynamic>.from(item))
+                  item is Map &&
+                  item['latitude'] != null &&
+                  item['longitude'] != null)
+              .map((item) => Map<String, dynamic>.from(item as Map))
               .toList();
         });
+
+        await _loadAllocationData();
       } else {
         throw Exception('Unable to load assessments.');
       }
     } catch (e) {
+      _cachedBaseUrl = null;
       debugPrint('Assessment loading error: $e');
     } finally {
       if (mounted) {
@@ -154,7 +226,7 @@ class _DamageAssessmentScreenState
 
   Color getDamageColor(Map<String, dynamic> item) {
     final status =
-    (item['analysis_status'] ?? '').toString().toLowerCase();
+        (item['analysis_status'] ?? '').toString().toLowerCase();
 
     if (status != 'completed' &&
         status != 'complete' &&
@@ -163,10 +235,10 @@ class _DamageAssessmentScreenState
     }
 
     final severity =
-    (item['severity'] ?? '').toString().toUpperCase();
+        (item['severity'] ?? '').toString().toUpperCase();
 
     final damage =
-    (item['damageLevel'] ?? '').toString().toUpperCase();
+        (item['damageLevel'] ?? '').toString().toUpperCase();
 
     if (severity == 'HIGH' ||
         severity == 'SEVERE' ||
@@ -191,7 +263,10 @@ class _DamageAssessmentScreenState
 
     if (severity == 'NONE' ||
         severity == 'NO DAMAGE' ||
+        severity == 'UNDAMAGED' ||
+        damage.contains('NO_BUILDING') ||
         damage.contains('NO_DAMAGE') ||
+        damage.contains('UNDAMAGED') ||
         damage.contains('NO VISIBLE')) {
       return green;
     }
@@ -201,7 +276,7 @@ class _DamageAssessmentScreenState
 
   String getDamageLabel(Map<String, dynamic> item) {
     final status =
-    (item['analysis_status'] ?? '').toString().toLowerCase();
+        (item['analysis_status'] ?? '').toString().toLowerCase();
 
     if (status != 'completed' &&
         status != 'complete' &&
@@ -209,8 +284,42 @@ class _DamageAssessmentScreenState
       return 'Pending AI Analysis';
     }
 
-    return (item['severity'] ?? item['damageLevel'] ?? 'Unknown')
-        .toString();
+    final damage = (item['damageLevel'] ?? '').toString().toUpperCase();
+    final severity = (item['severity'] ?? '').toString().toUpperCase();
+
+    if (damage.contains('NO_BUILDING')) {
+      return 'No Building Detected';
+    }
+
+    if (severity == 'NONE' ||
+        severity == 'NO DAMAGE' ||
+        damage.contains('NO_DAMAGE') ||
+        damage.contains('UNDAMAGED') ||
+        damage.contains('NO VISIBLE')) {
+      return 'No Building Damage';
+    }
+
+    if (severity == 'HIGH' ||
+        severity == 'SEVERE' ||
+        damage.contains('SEVERE') ||
+        damage.contains('FULL')) {
+      return 'Severe Damage';
+    }
+
+    if (severity == 'MODERATE' ||
+        severity == 'MEDIUM' ||
+        damage.contains('MODERATE') ||
+        damage.contains('PARTIAL')) {
+      return 'Moderate Damage';
+    }
+
+    if (severity == 'LOW' ||
+        severity == 'MINOR' ||
+        damage.contains('MINOR')) {
+      return 'Minor Damage';
+    }
+
+    return (item['severity'] ?? item['damageLevel'] ?? 'Unknown').toString();
   }
 
   // ============================================================
@@ -220,8 +329,8 @@ class _DamageAssessmentScreenState
   void showDamageDetails(Map<String, dynamic> item) {
     final color = getDamageColor(item);
 
-    final lat = (item['latitude'] as num).toDouble();
-    final lon = (item['longitude'] as num).toDouble();
+    final lat = _parseDouble(item['latitude']) ?? 0.0;
+    final lon = _parseDouble(item['longitude']) ?? 0.0;
 
     final severity = getDamageLabel(item);
 
@@ -231,7 +340,25 @@ class _DamageAssessmentScreenState
     final details =
         item['details'] ?? 'Waiting for AI damage analysis.';
 
-    final imagePath = item['imageUrl'];
+    String? resolveUrl(dynamic raw) {
+      if (raw == null) return null;
+      final str = raw.toString().trim();
+      if (str.isEmpty) return null;
+      if (str.startsWith('http://') || str.startsWith('https://')) return str;
+      if (str.startsWith('damage_assessment_uploads/')) {
+        final filename = str.split('/').last;
+        return '$baseUrl/uploads/$filename';
+      }
+      final clean = str.startsWith('/') ? str : '/$str';
+      return '$baseUrl$clean';
+    }
+
+    final afterImageUrl = resolveUrl(
+      item['imageUrl'] ?? item['image_url'] ?? item['after_image'],
+    );
+    final beforeImageUrl = resolveUrl(
+      item['beforeImageUrl'] ?? item['before_image'],
+    );
 
     showModalBottomSheet<void>(
       context: context,
@@ -276,15 +403,85 @@ class _DamageAssessmentScreenState
 
                 const SizedBox(height: 18),
 
-                if (imagePath != null)
+                if (beforeImageUrl != null && afterImageUrl != null) ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'BEFORE FLOOD',
+                              style: TextStyle(
+                                color: muted,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.network(
+                                beforeImageUrl,
+                                height: 140,
+                                width: double.infinity,
+                                fit: BoxFit.cover,
+                                errorBuilder: (ctx, err, st) => Container(
+                                  height: 120,
+                                  color: background,
+                                  alignment: Alignment.center,
+                                  child: const Text('Photo unavailable',
+                                      style: TextStyle(color: muted, fontSize: 11)),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'AFTER FLOOD',
+                              style: TextStyle(
+                                color: red,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.network(
+                                afterImageUrl,
+                                height: 140,
+                                width: double.infinity,
+                                fit: BoxFit.cover,
+                                errorBuilder: (ctx, err, st) => Container(
+                                  height: 120,
+                                  color: background,
+                                  alignment: Alignment.center,
+                                  child: const Text('Photo unavailable',
+                                      style: TextStyle(color: muted, fontSize: 11)),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else if (afterImageUrl != null) ...[
                   ClipRRect(
                     borderRadius: BorderRadius.circular(14),
                     child: Image.network(
-                      '$baseUrl$imagePath',
+                      afterImageUrl,
                       height: 190,
                       width: double.infinity,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) {
+                      errorBuilder: (context, error, stackTrace) {
                         return Container(
                           height: 120,
                           color: background,
@@ -297,6 +494,7 @@ class _DamageAssessmentScreenState
                       },
                     ),
                   ),
+                ],
 
                 const SizedBox(height: 16),
 
@@ -323,8 +521,8 @@ class _DamageAssessmentScreenState
 
                 Text(
                   'GPS Coordinates: '
-                      '${lat.toStringAsFixed(5)}, '
-                      '${lon.toStringAsFixed(5)}',
+                  '${lat.toStringAsFixed(5)}, '
+                  '${lon.toStringAsFixed(5)}',
                   style: const TextStyle(
                     color: muted,
                     fontSize: 12,
@@ -455,14 +653,14 @@ class _DamageAssessmentScreenState
 
     try {
       final serviceEnabled =
-      await Geolocator.isLocationServiceEnabled();
+          await Geolocator.isLocationServiceEnabled();
 
       if (!serviceEnabled) {
         throw Exception('Please enable location services.');
       }
 
       LocationPermission permission =
-      await Geolocator.checkPermission();
+          await Geolocator.checkPermission();
 
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -484,6 +682,13 @@ class _DamageAssessmentScreenState
       setState(() {
         currentPosition = position;
       });
+
+      try {
+        _mapController.move(
+          LatLng(position.latitude, position.longitude),
+          12.0,
+        );
+      } catch (_) {}
     } catch (e) {
       if (!mounted) return;
 
@@ -556,7 +761,7 @@ class _DamageAssessmentScreenState
       );
 
       request.fields['mode'] =
-      compareMode ? 'before_after' : 'after_only';
+          compareMode ? 'before_after' : 'after_only';
 
       request.fields['latitude'] =
           currentPosition!.latitude.toString();
@@ -585,11 +790,14 @@ class _DamageAssessmentScreenState
       );
 
       final response =
-      await http.Response.fromStream(streamedResponse);
+          await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200 ||
           response.statusCode == 201) {
-        final result = jsonDecode(response.body);
+        dynamic result;
+        try {
+          result = jsonDecode(response.body);
+        } catch (_) {}
 
         if (!mounted) return;
 
@@ -602,12 +810,13 @@ class _DamageAssessmentScreenState
 
         if (!mounted) return;
 
+        final message = (result is Map && result['message'] != null)
+            ? result['message'].toString()
+            : 'Photographs uploaded successfully. Waiting for AI analysis.';
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              result['message'] ??
-                  'Photographs uploaded successfully. Waiting for AI analysis.',
-            ),
+            content: Text(message),
             backgroundColor: Colors.green,
           ),
         );
@@ -617,6 +826,7 @@ class _DamageAssessmentScreenState
         );
       }
     } catch (e) {
+      _cachedBaseUrl = null;
       debugPrint('Damage assessment upload error: $e');
 
       if (!mounted) return;
@@ -653,15 +863,30 @@ class _DamageAssessmentScreenState
   Widget buildEmbeddedDamageMap() {
     final defaultCenter = currentPosition != null
         ? LatLng(
-      currentPosition!.latitude,
-      currentPosition!.longitude,
-    )
+            currentPosition!.latitude,
+            currentPosition!.longitude,
+          )
         : widget.initialCenter ??
-        const LatLng(15.3173, 75.7139);
+            const LatLng(15.3173, 75.7139);
 
+    final Map<String, int> locationCounts = {};
     final markers = assessments.map((item) {
-      final lat = (item['latitude'] as num).toDouble();
-      final lon = (item['longitude'] as num).toDouble();
+      final baseLat = _parseDouble(item['latitude']);
+      final baseLon = _parseDouble(item['longitude']);
+      if (baseLat == null || baseLon == null) return null;
+
+      final key = '${baseLat.toStringAsFixed(4)},${baseLon.toStringAsFixed(4)}';
+      final count = locationCounts[key] ?? 0;
+      locationCounts[key] = count + 1;
+
+      double lat = baseLat;
+      double lon = baseLon;
+      if (count > 0) {
+        final angle = count * 1.25;
+        final radius = count * 0.00035;
+        lat += radius * math.cos(angle);
+        lon += radius * math.sin(angle);
+      }
 
       final color = getDamageColor(item);
 
@@ -681,7 +906,7 @@ class _DamageAssessmentScreenState
               ),
               boxShadow: [
                 BoxShadow(
-                  color: color.withOpacity(0.65),
+                  color: color.withValues(alpha: 0.65),
                   blurRadius: 10,
                   spreadRadius: 2,
                 ),
@@ -690,7 +915,7 @@ class _DamageAssessmentScreenState
           ),
         ),
       );
-    }).toList();
+    }).whereType<Marker>().toList();
 
     return Container(
       decoration: BoxDecoration(
@@ -740,13 +965,13 @@ class _DamageAssessmentScreenState
                       MaterialPageRoute(
                         builder: (_) =>
                             DamageAssessmentMapScreen(
-                              initialCenter: currentPosition != null
-                                  ? LatLng(
-                                currentPosition!.latitude,
-                                currentPosition!.longitude,
-                              )
-                                  : defaultCenter,
-                            ),
+                          initialCenter: currentPosition != null
+                              ? LatLng(
+                                  currentPosition!.latitude,
+                                  currentPosition!.longitude,
+                                )
+                              : defaultCenter,
+                        ),
                       ),
                     );
                   },
@@ -772,17 +997,17 @@ class _DamageAssessmentScreenState
               child: Stack(
                 children: [
                   FlutterMap(
+                    mapController: _mapController,
                     options: MapOptions(
-                      initialCenter: widget.initialCenter ??
-                          const LatLng(15.3173, 75.7139),
+                      initialCenter: defaultCenter,
                       initialZoom: 7,
                     ),
                     children: [
                       TileLayer(
                         urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                         userAgentPackageName:
-                        'com.floodwatch.floodguard',
+                            'com.floodwatch.floodguard',
                         maxZoom: 19,
                       ),
                       MarkerLayer(markers: markers),
@@ -883,7 +1108,7 @@ class _DamageAssessmentScreenState
         color: card,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
-          color: red.withOpacity(0.35),
+          color: red.withValues(alpha: 0.35),
         ),
       ),
       child: Column(
@@ -891,7 +1116,7 @@ class _DamageAssessmentScreenState
         children: [
           Row(
             mainAxisAlignment:
-            MainAxisAlignment.spaceBetween,
+                MainAxisAlignment.spaceBetween,
             children: [
               Text(
                 title,
@@ -908,7 +1133,7 @@ class _DamageAssessmentScreenState
                     vertical: 3,
                   ),
                   decoration: BoxDecoration(
-                    color: red.withOpacity(0.2),
+                    color: red.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: const Text(
@@ -949,44 +1174,44 @@ class _DamageAssessmentScreenState
               ),
               child: image != null
                   ? ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: Image.file(
-                  image,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
-              )
+                      borderRadius: BorderRadius.circular(14),
+                      child: Image.file(
+                        image,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    )
                   : Column(
-                mainAxisAlignment:
-                MainAxisAlignment.center,
-                children: [
-                  const Icon(
-                    Icons.add_a_photo_outlined,
-                    color: red,
-                    size: 38,
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    isAfter
-                        ? 'Tap to Capture Live Photo'
-                        : 'Tap to Upload Photo',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
+                      mainAxisAlignment:
+                          MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.add_a_photo_outlined,
+                          color: red,
+                          size: 38,
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          isAfter
+                              ? 'Tap to Capture Live Photo'
+                              : 'Tap to Upload Photo',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          isAfter
+                              ? 'Camera Capture Required'
+                              : 'Camera or Gallery',
+                          style: const TextStyle(
+                            color: muted,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    isAfter
-                        ? 'Camera Capture Required'
-                        : 'Camera or Gallery',
-                    style: const TextStyle(
-                      color: muted,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
             ),
           ),
         ],
@@ -1077,9 +1302,11 @@ class _DamageAssessmentScreenState
                       ),
                     ),
                     onChanged: (value) {
-                      setState(() {
-                        compareMode = value!;
-                      });
+                      if (value != null) {
+                        setState(() {
+                          compareMode = value;
+                        });
+                      }
                     },
                   ),
 
@@ -1099,10 +1326,12 @@ class _DamageAssessmentScreenState
                       ),
                     ),
                     onChanged: (value) {
-                      setState(() {
-                        compareMode = value!;
-                        beforeImage = null;
-                      });
+                      if (value != null) {
+                        setState(() {
+                          compareMode = value;
+                          beforeImage = null;
+                        });
+                      }
                     },
                   ),
                 ],
@@ -1115,7 +1344,7 @@ class _DamageAssessmentScreenState
               imageUploadCard(
                 title: 'Before Flood Image',
                 description:
-                'Select an old photograph taken before flooding.',
+                    'Select an old photograph taken before flooding.',
                 image: beforeImage,
                 onTap: () => pickImage(true),
               ),
@@ -1125,7 +1354,7 @@ class _DamageAssessmentScreenState
             imageUploadCard(
               title: 'After Flood Image',
               description:
-              'Capture a live photograph of the affected building.',
+                  'Capture a live photograph of the affected building.',
               image: afterImage,
               onTap: () => pickImage(false),
             ),
@@ -1167,8 +1396,8 @@ class _DamageAssessmentScreenState
                   else if (currentPosition != null)
                     Text(
                       'GPS Coordinates: '
-                          '${currentPosition!.latitude.toStringAsFixed(5)}, '
-                          '${currentPosition!.longitude.toStringAsFixed(5)}',
+                      '${currentPosition!.latitude.toStringAsFixed(5)}, '
+                      '${currentPosition!.longitude.toStringAsFixed(5)}',
                       style: const TextStyle(
                         color: Colors.white,
                         height: 1.5,
@@ -1204,16 +1433,16 @@ class _DamageAssessmentScreenState
               height: 54,
               child: ElevatedButton.icon(
                 onPressed:
-                isUploading ? null : uploadAssessment,
+                    isUploading ? null : uploadAssessment,
                 icon: isUploading
                     ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2,
-                  ),
-                )
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
                     : const Icon(Icons.analytics_outlined),
                 label: Text(
                   isUploading
@@ -1234,51 +1463,285 @@ class _DamageAssessmentScreenState
               ),
             ),
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 28),
 
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: OutlinedButton.icon(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          DamageAssessmentMapScreen(
-                            initialCenter: currentPosition != null
-                                ? LatLng(
-                              currentPosition!.latitude,
-                              currentPosition!.longitude,
-                            )
-                                : widget.initialCenter,
-                          ),
+            // EMERGENCY RESOURCE ALLOCATION & AI PRIORITY DECISION SYSTEM
+            buildResourceAllocationSection(),
+
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static const Color cardBorder = Color(0xFF342629);
+
+  Widget buildResourceAllocationSection() {
+    final sum = _allocationSummary;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: card,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: red.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: red.withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.shield_outlined, color: red, size: 24),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'AI RESOURCE ALLOCATION SYSTEM',
+                      style: TextStyle(
+                        color: red,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11,
+                        letterSpacing: 1.2,
+                      ),
                     ),
-                  );
-                },
-                icon: const Icon(
-                  Icons.map_outlined,
-                  color: Colors.white,
+                    SizedBox(height: 2),
+                    Text(
+                      'Emergency Resource & Decision Engine',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
                 ),
-                label: const Text(
-                  'DISASTER DAMAGE ASSESSMENT MAP',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 18),
+          const Divider(color: Colors.white12),
+          const SizedBox(height: 14),
+
+          // STEP 1: FloodGuard identifies flood-affected locations
+          _buildAllocationStep(
+            stepNumber: '1',
+            title: 'Flood-Affected Locations Identified',
+            description: sum != null
+                ? 'FloodGuard identified ${sum.totalLocations} active flood-affected regions across Karnataka.'
+                : 'Identifies active flood-affected locations.',
+            badgeText: sum != null ? '${sum.totalLocations} Locations' : 'Active',
+            badgeColor: red,
+            icon: Icons.location_city_outlined,
+          ),
+
+          const SizedBox(height: 14),
+
+          // STEP 2: Risk Levels and Affected Population
+          _buildAllocationStep(
+            stepNumber: '2',
+            title: 'Flood-Risk Levels & Population Data',
+            description: sum != null
+                ? 'Collected risk levels & ${sum.totalAffectedPopulation} affected residents.'
+                : 'Collects flood-risk levels and population data.',
+            badgeText: sum != null ? '${sum.totalAffectedPopulation} Residents' : 'Pop Data',
+            badgeColor: orange,
+            icon: Icons.people_outline,
+          ),
+
+          const SizedBox(height: 14),
+
+          // STEP 3: Emergency teams enter available resources
+          _buildAllocationStep(
+            stepNumber: '3',
+            title: 'Emergency Team Resource Inventory',
+            description: sum != null
+                ? 'Emergency teams registered ${sum.availableResources.boats} boats, ${sum.availableResources.foodPacks} food packs & ${sum.availableResources.rescueTeams} rescue teams.'
+                : 'Emergency teams enter available resources.',
+            badgeText: 'Manage Inventory',
+            badgeColor: Colors.blue,
+            icon: Icons.inventory_2_outlined,
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ResourceAllocationScreen()),
+              ).then((_) => _loadAllocationData());
+            },
+          ),
+
+          const SizedBox(height: 14),
+
+          // STEP 4: System calculates resource shortages
+          _buildAllocationStep(
+            stepNumber: '4',
+            title: 'Calculated Resource Shortages',
+            description: sum != null
+                ? 'Calculated deficit: ${sum.totalShortages.boats} boats missing, ${sum.totalShortages.foodPacks} food packs missing & ${sum.totalShortages.medicalKits} medical kits missing.'
+                : 'System calculates resource shortages.',
+            badgeText: sum != null ? '${sum.totalShortages.boats} Boats Short' : 'Shortage',
+            badgeColor: red,
+            icon: Icons.calculate_outlined,
+          ),
+
+          const SizedBox(height: 14),
+
+          // STEP 5: AI recommends location priority
+          _buildAllocationStep(
+            stepNumber: '5',
+            title: 'AI Priority Location Recommendation',
+            description: sum != null
+                ? 'AI Engine recommends prioritizing "${sum.topPriorityLocation}" (#1 Priority Target) for first resource deployment.'
+                : 'AI recommends location resource priority.',
+            badgeText: sum != null ? 'Rank #1 Target' : 'AI Priority',
+            badgeColor: green,
+            icon: Icons.psychology_outlined,
+          ),
+
+          const SizedBox(height: 14),
+
+          // STEP 6: Authority Allocation Decisions
+          _buildAllocationStep(
+            stepNumber: '6',
+            title: 'Authority Allocation & Decision Insights',
+            description: 'Authorities can review AI insights, confirm dispatch orders, and manage resource distribution.',
+            badgeText: 'Authority Action',
+            badgeColor: red,
+            icon: Icons.admin_panel_settings_outlined,
+          ),
+
+          const SizedBox(height: 20),
+
+          SizedBox(
+            width: double.infinity,
+            height: 50,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: red,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(
-                    color: Colors.white38,
+              ),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ResourceAllocationScreen(),
                   ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
+                ).then((_) => _loadAllocationData());
+              },
+              icon: const Icon(Icons.auto_awesome),
+              label: const Text(
+                'OPEN RESOURCE ALLOCATION & AI INSIGHTS',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
                 ),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
 
-            const SizedBox(height: 20),
+  Widget _buildAllocationStep({
+    required String stepNumber,
+    required String title,
+    required String description,
+    required String badgeText,
+    required Color badgeColor,
+    required IconData icon,
+    VoidCallback? onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: cardBorder),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 28,
+              height: 28,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: red.withValues(alpha: 0.2),
+                shape: BoxShape.circle,
+              ),
+              child: Text(
+                stepNumber,
+                style: const TextStyle(
+                  color: red,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: badgeColor.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          badgeText,
+                          style: TextStyle(
+                            color: badgeColor,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    description,
+                    style: const TextStyle(
+                      color: muted,
+                      fontSize: 11,
+                      height: 1.3,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),

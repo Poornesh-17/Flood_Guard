@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:http/http.dart' as http;
 import '../services/resource_allocation_service.dart';
+import 'damage_assessment_screen.dart';
 
 class ResourceAllocationScreen extends StatefulWidget {
   const ResourceAllocationScreen({super.key});
@@ -38,8 +41,28 @@ class _ResourceAllocationScreenState extends State<ResourceAllocationScreen> {
     final data = await _service.loadAllocationData();
     _locations = data['locations'] as List<AffectedLocation>;
     _availableResources = data['available_resources'] as AvailableResources;
+
+    try {
+      final activeUrl = await DamageAssessmentScreen.getActiveBaseUrl();
+      final res = await http.get(Uri.parse('$activeUrl/assessments')).timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        final decoded = jsonDecode(res.body);
+        final List<dynamic> records = decoded is Map<String, dynamic>
+            ? (decoded['assessments'] as List<dynamic>? ?? [])
+            : (decoded is List ? decoded : []);
+        final assessmentList = records.whereType<Map<String, dynamic>>().toList();
+        if (assessmentList.isNotEmpty) {
+          _locations = _service.syncWithImageAssessments(assessmentList, _locations);
+        }
+      }
+    } catch (e) {
+      debugPrint('Sync image assessments notice: $e');
+    }
+
     _recalculate();
-    setState(() => _isLoading = false);
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
   }
 
   void _recalculate() {
@@ -109,7 +132,7 @@ class _ResourceAllocationScreenState extends State<ResourceAllocationScreen> {
                 _recalculate();
               });
               await _saveData();
-              if (mounted) Navigator.pop(ctx);
+              if (mounted) Navigator.pop(context);
             },
             child: const Text('SAVE RESOURCES'),
           ),
@@ -182,7 +205,7 @@ class _ResourceAllocationScreenState extends State<ResourceAllocationScreen> {
               });
               await _saveData();
               if (mounted) {
-                Navigator.pop(ctx);
+                Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(content: Text('Resource dispatch updated for ${res.location.name}')),
                 );
@@ -232,7 +255,7 @@ class _ResourceAllocationScreenState extends State<ResourceAllocationScreen> {
               decoration: BoxDecoration(
                 color: const Color(0xFF230D10),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: red.withOpacity(0.5)),
+                border: Border.all(color: red.withValues(alpha: 0.5)),
               ),
               child: Row(
                 children: [
@@ -323,8 +346,11 @@ class _ResourceAllocationScreenState extends State<ResourceAllocationScreen> {
                 child: FlutterMap(
                   mapController: _mapController,
                   options: MapOptions(
-                    initialCenter: const LatLng(15.3173, 75.7139),
-                    initialZoom: 6.8,
+                    initialCenter: sum.rankedLocations.isNotEmpty
+                        ? LatLng(sum.rankedLocations.first.location.latitude,
+                            sum.rankedLocations.first.location.longitude)
+                        : const LatLng(15.3173, 75.7139),
+                    initialZoom: sum.rankedLocations.length == 1 ? 12.0 : 6.8,
                   ),
                   children: [
                     TileLayer(
@@ -396,7 +422,7 @@ class _ResourceAllocationScreenState extends State<ResourceAllocationScreen> {
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.15),
+              color: color.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(icon, color: color, size: 22),
@@ -442,7 +468,7 @@ class _ResourceAllocationScreenState extends State<ResourceAllocationScreen> {
       decoration: BoxDecoration(
         color: card,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: res.aiRank == 1 ? red.withOpacity(0.8) : cardBorder, width: res.aiRank == 1 ? 2 : 1),
+        border: Border.all(color: res.aiRank == 1 ? red.withValues(alpha: 0.8) : cardBorder, width: res.aiRank == 1 ? 2 : 1),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -466,7 +492,7 @@ class _ResourceAllocationScreenState extends State<ResourceAllocationScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: riskColor.withOpacity(0.18),
+                  color: riskColor.withValues(alpha: 0.18),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(loc.riskLevel,
