@@ -1,0 +1,26 @@
+{
+    "model_name": "FloodWatch Karnataka Flood Model",
+    "region": "Karnataka, India",
+    "features": [
+        "latitude",
+        "longitude",
+        "rainfall_1day",
+        "rainfall_3day",
+        "rainfall_7day",
+        "ground_elevation_m",
+        "river_distance_km"
+    ],
+    "target": "historical_flood",
+    "model_type": "TensorFlow binary flood probability model",
+    "green_threshold": 0.4,
+    "orange_threshold": 0.7,
+    "risk_levels": {
+        "green": "probability < 0.40",
+        "orange": "0.40 <= probability < 0.70",
+        "red": "probability >= 0.70"
+    },
+    "training_records": 34066,
+    "validation_records": 7300,
+    "testing_records": 7301,
+    "roc_auc": 0.866089803045099
+}

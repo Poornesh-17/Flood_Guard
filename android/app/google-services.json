@@ -1,0 +1,76 @@
+{
+  "project_info": {
+    "project_number": "839823089254",
+    "project_id": "floodwatch-karnataka-2026",
+    "storage_bucket": "floodwatch-karnataka-2026.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:839823089254:android:edff237e4401d13782d7a7",
+        "android_client_info": {
+          "package_name": "com.example.flood_detector"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "839823089254-o579agr1qqaij6qrhvfbk15i6eo8vvvq.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.flood_detector",
+            "certificate_hash": "afb174dd55b8ed941d4720ee93a4b1f3cd14e6e2"
+          }
+        },
+        {
+          "client_id": "839823089254-i6u4iknso18a3pjpeqnpuspuiseagjvv.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCvSGctvgKr4RqXyHUDncPfBkntpqs2RHs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "839823089254-i6u4iknso18a3pjpeqnpuspuiseagjvv.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:839823089254:android:ec12c63dac61299c82d7a7",
+        "android_client_info": {
+          "package_name": "com.example.flood_guard"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "839823089254-i6u4iknso18a3pjpeqnpuspuiseagjvv.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCvSGctvgKr4RqXyHUDncPfBkntpqs2RHs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "839823089254-i6u4iknso18a3pjpeqnpuspuiseagjvv.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,73 @@
+
+  name: flood_guard
+  description: "FloodGuard - Karnataka Flood Monitoring and Safety Application"
+  publish_to: 'none'
+
+  version: 1.0.0+1
+
+  environment:
+    sdk: ^3.13.4
+
+  dependencies:
+    flutter:
+      sdk: flutter
+
+    # UI
+    cupertino_icons: ^1.0.8
+
+    # Firebase
+    firebase_core: ^3.15.2
+    firebase_auth: ^5.7.0
+    cloud_firestore: ^5.6.12
+    firebase_messaging: ^15.2.10
+
+    # Notifications
+    flutter_local_notifications: ^19.4.0
+
+    # Maps and location
+    flutter_map: ^8.2.1
+    latlong2: ^0.9.1
+    geolocator: ^14.0.2
+    geocoding: ^4.0.0
+
+    # Networking
+    http: ^1.6.0
+
+    # Local storage
+    shared_preferences: ^2.5.3
+    flutter_map_vector_tiles: ^2.10.1
+    flutter_map_vector_tiles_mbtiles: ^1.0.0
+    url_launcher: ^6.3.3
+    sqflite: ^2.4.5
+    path: ^1.9.1
+    path_provider: ^2.1.6
+    image_picker: ^1.2.4
+
+  dev_dependencies:
+    flutter_test:
+      sdk: flutter
+
+    flutter_lints: ^6.0.0
+    flutter_launcher_icons: ^0.14.4
+
+  flutter:
+    uses-material-design: true
+
+    assets:
+      - assets/images/
+      - assets/icon/
+      - assets/karnataka_flood_risk_grid.json
+      - assets/offline_maps/
+      - assets/offline_routing/routing_tiles_v4/
+      - assets/offline_places.db
+      - assets/offline_roads.db
+
+  # App launcher icon configuration
+  flutter_launcher_icons:
+    android: true
+    ios: true
+    image_path: "assets/icon/LOGOFG.png"
+    adaptive_icon_background: "#FFFFFF"
+    adaptive_icon_foreground: "assets/icon/LOGOFG.png"
+    remove_alpha_ios: true
+
