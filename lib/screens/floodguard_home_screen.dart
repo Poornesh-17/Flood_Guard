@@ -2777,7 +2777,7 @@ out center;
   Widget buildNearestSafeGround() {
     return Container(
       padding: const EdgeInsets.all(18),
-      decoration: BoxDecorgit add README.mdation(
+      decoration: BoxDecoration(
         color: const Color(0xFF0D0809), // Dark sleek background
         borderRadius: BorderRadius.circular(22),
         border: Border.all(
